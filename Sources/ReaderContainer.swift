@@ -392,7 +392,7 @@ struct ReaderContainer: View {
         // 否则 onAppear 里同步解压会被看门狗杀掉 —— 表现就是「点开就闪退」且没有崩溃日志
         DispatchQueue.global(qos: .userInitiated).async {
             var built: BookContent?
-            var error: String?
+            var failure: String?
 
             switch format {
             case .epub:
@@ -402,18 +402,21 @@ struct ReaderContainer: View {
                     let text = try TextFile.text(at: url)
                     built = TXTContent(text: text, title: title)
                 } catch {
-                    error = "读取失败：\(error.localizedDescription)"
+                    // 注意：catch 里的 error 是捕获到的 Error（不可变），
+                    // 不能拿来做局部变量名，否则编译器报 "cannot assign to value: 'error' is immutable"
+                    let reason = error.localizedDescription
+                    failure = "读取失败：" + reason
                 }
             }
 
             if let c = built, c.chapters.isEmpty {
-                error = "这本书解析出 0 个章节，可能文件损坏"
+                failure = "这本书解析出 0 个章节，可能文件损坏"
                 built = nil
             }
 
             DispatchQueue.main.async {
                 content = built
-                loadError = error
+                loadError = failure
             }
         }
     }
