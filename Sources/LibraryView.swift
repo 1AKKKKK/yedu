@@ -115,6 +115,7 @@ struct LibraryView: View {
 
     private func cell(_ book: Book) -> some View {
         Button {
+            CrashLog.append("tap cover: \(book.title) [\(book.format.rawValue)] file=\(book.fileName)")
             openBook = book
         } label: {
             cellBody(book)

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// 把闪退信息写进沙盒，方便在「设置 → 诊断」里看到
 enum CrashLog {
@@ -28,6 +29,10 @@ enum CrashLog {
         try? FileManager.default.removeItem(at: url)
     }
 
+    static func exists() -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
+    }
+
     /// 在 App 启动时安装：Objective-C 异常 + 常见信号
     static func install() {
         NSSetUncaughtExceptionHandler { ex in
@@ -47,10 +52,16 @@ enum CrashLog {
 
 struct CrashLogView: View {
     @State private var content = ""
+    @State private var copied = false
+    @State private var showShare = false
+
+    private var bodyText: String {
+        content.isEmpty ? "还没有日志。\n\n（如果刚点开书就闪退，重启 App 后再回来这里看。）" : content
+    }
 
     var body: some View {
         ScrollView {
-            Text(content.isEmpty ? "还没有崩溃记录" : content)
+            Text(bodyText)
                 .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -59,13 +70,39 @@ struct CrashLogView: View {
         .navigationTitle("崩溃日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("清空") {
-                    CrashLog.clear()
-                    content = ""
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button(copied ? "已复制" : "复制") {
+                    UIPasteboard.general.string = bodyText
+                    copied = true
+                }
+                .disabled(content.isEmpty)
+
+                Menu {
+                    Button {
+                        showShare = true
+                    } label: {
+                        Label("导出为文件 / 分享", systemImage: "square.and.arrow.up")
+                    }
+                    Button(role: .destructive) {
+                        CrashLog.clear()
+                        content = ""
+                        copied = false
+                    } label: {
+                        Label("清空日志", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
+        .sheet(isPresented: $showShare) {
+            ShareSheet(items: shareItems)
+        }
         .onAppear { content = CrashLog.text() }
+    }
+
+    private var shareItems: [Any] {
+        if CrashLog.exists() { return [CrashLog.url] }
+        return [bodyText.isEmpty ? "no log" : bodyText]
     }
 }

@@ -82,6 +82,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        CrashLog.append("reader webview viewDidLoad")
         view.backgroundColor = UIColor(hex: settings.theme.background)
         UIApplication.shared.isIdleTimerDisabled = true
 

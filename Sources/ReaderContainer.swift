@@ -388,6 +388,8 @@ struct ReaderContainer: View {
         let title = book.title
         let format = book.format
 
+        CrashLog.append("reader load begin: \(title) format=\(format.rawValue)")
+
         // 解包一整本书（EPUB 动辄上百兆条目）必须离开主线程，
         // 否则 onAppear 里同步解压会被看门狗杀掉 —— 表现就是「点开就闪退」且没有崩溃日志
         DispatchQueue.global(qos: .userInitiated).async {
@@ -415,6 +417,7 @@ struct ReaderContainer: View {
             }
 
             DispatchQueue.main.async {
+                CrashLog.append("reader load done: chapters=\(built?.chapters.count ?? -1) err=\(failure ?? "-")")
                 content = built
                 loadError = failure
             }
