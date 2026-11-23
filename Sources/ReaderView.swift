@@ -101,9 +101,11 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
         let web = WKWebView(frame: UIScreen.main.bounds, configuration: conf)
         web.navigationDelegate = self
-        web.isOpaque = false
-        web.backgroundColor = .clear
-        web.scrollView.backgroundColor = .clear
+        // 不透明 + 与主题同色的底色：iOS 15 上透明 WKWebView 叠加多列布局时偶发整块不绘制
+        web.isOpaque = true
+        let paper = UIColor(hex: settings.theme.background) ?? .white
+        web.backgroundColor = paper
+        web.scrollView.backgroundColor = paper
         web.scrollView.bounces = false
         web.scrollView.alwaysBounceVertical = false
         web.scrollView.alwaysBounceHorizontal = false
@@ -140,12 +142,36 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
     // MARK: 章节装载
 
+    static func htmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// 出错时的可见提示页（内联样式，不依赖分页 CSS）——任何情况下都不给空白页
+    private static func noticeHTML(title: String, detail: String) -> String {
+        """
+        <div style="padding:24px 4px;font-size:15px;line-height:1.9;">
+          <p style="text-indent:0;font-weight:600;">\(htmlEscape(title.isEmpty ? "本章无法显示" : title))</p>
+          <p style="text-indent:0;opacity:.72;">\(htmlEscape(detail))</p>
+          <p style="text-indent:0;opacity:.72;">若这是你自己导入的书：回书架长按删除后重新导入一次；<br>若所有书都这样，请把「设置 → 诊断 → 崩溃日志」最后几行发我。</p>
+        </div>
+        """
+    }
+
     private func bodyHTML(for chapter: Chapter) -> String {
-        if let url = chapter.fileURL,
-           let raw = try? String(contentsOf: url, encoding: .utf8) {
-            return Self.extractBody(raw)
+        // 1) 建章时已用 BookText 读过正文（多编码降级），优先用它
+        // 2) 否则再读一次文件，同样走 BookText
+        let stored = chapter.html
+        let raw = stored.isEmpty ? (BookText.read(chapter.fileURL) ?? "") : stored
+        let body = Self.extractBody(raw)
+        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return body
         }
-        return chapter.html
+        let name = chapter.fileURL?.lastPathComponent ?? "nil"
+        CrashLog.append("chapter empty: index=\(chapterIndex) file=\(name) rawLen=\(raw.count) url=\(chapter.fileURL?.path ?? "nil")")
+        return Self.noticeHTML(title: chapter.title,
+                               detail: "正文读不出来：\(name)（原始长度 \(raw.count) 字节）")
     }
 
     private func loadChapter(_ index: Int, restoreFraction: Double) {
@@ -300,6 +326,9 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             onMatches?(list.count)
             if !list.isEmpty { gotoMatch(0) }
 
+        case "log":
+            if let m = body["msg"] as? String { CrashLog.append("js: \(m)") }
+
         case "note":
             if let t = body["text"] as? String, !t.isEmpty { onNoteref?(t) }
 
@@ -362,19 +391,22 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
     private static func page(body: String, settings s: ReaderSettings) -> String {
         let css = """
-        html,body{margin:0;padding:0;height:100%;background:\(s.theme.background);color:\(s.theme.foreground);
-          -webkit-text-size-adjust:none;-webkit-font-smoothing:antialiased;overflow:hidden;}
-        #wrap{position:relative;width:100vw;height:100vh;overflow:hidden;}
-        #yc{box-sizing:border-box;width:100vw;padding:14px 20px 30px 20px;
-          font-family:"\(s.fontFamily)",-apple-system,serif;font-size:\(s.fontSize)px;line-height:\(s.lineHeight);
-          text-align:justify;line-break:strict;word-break:normal;overflow-wrap:break-word;
-          will-change:transform;transition:transform .34s cubic-bezier(.22,.61,.36,1);}
-        .y-paged #yc{height:100vh;column-width:100vw;column-gap:0;column-fill:auto;}
-        .y-scroll #wrap{overflow-y:auto;-webkit-overflow-scrolling:touch;}
-        .y-scroll #yc{height:auto;transform:none!important;transition:none;padding-bottom:60px;}
+        html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden;
+          background:\(s.theme.background);color:\(s.theme.foreground);
+          -webkit-text-size-adjust:none;-webkit-font-smoothing:antialiased;}
+        #wrap{position:relative;width:100vw;height:100vh;overflow:hidden;scroll-behavior:smooth;}
+        #yc{box-sizing:border-box;width:100vw;height:100vh;padding:16px 20px 34px 20px;
+          -webkit-column-width:calc(100vw - 40px);-moz-column-width:calc(100vw - 40px);column-width:calc(100vw - 40px);
+          -webkit-column-gap:0;column-gap:0;
+          -webkit-column-fill:auto;column-fill:auto;
+          font-family:"\(s.fontFamily)",-apple-system,serif;font-size:\(s.fontSize)px;
+          line-height:\(s.lineHeight);text-align:justify;line-break:strict;
+          word-break:normal;overflow-wrap:break-word;}
+        .y-scroll #wrap{overflow-y:auto;overflow-x:hidden;scroll-behavior:auto;-webkit-overflow-scrolling:touch;}
+        .y-scroll #yc{height:auto;width:100%;column-width:auto;-webkit-column-width:auto;padding-bottom:64px;}
         p{margin:0 0 \(s.paragraphSpacingEM)em 0;text-indent:\(s.indentEM)em;}
         p:last-child{margin-bottom:0;}
-        h1,h2,h3{line-height:1.45;margin:1.1em 0 .6em;text-indent:0;font-weight:600;break-after:avoid;}
+        h1,h2,h3{line-height:1.45;margin:1.1em 0 .6em;text-indent:0;font-weight:600;}
         img{max-width:100%;height:auto;display:block;margin:1em auto;}
         a{color:inherit;text-decoration:underline dotted;}
         blockquote{margin:1em 0;padding-left:1em;border-left:3px solid rgba(128,128,128,.35);}
@@ -404,77 +436,83 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
           var root=document.documentElement;
           var wrap=document.getElementById('wrap');
           var yc=document.getElementById('yc');
-          var page=0,total=1,paged=__PAGED__;
+          var page=0,total=1,paged=__PAGED__,busy=false;
 
           function post(o){try{window.webkit.messageHandlers.reader.postMessage(o)}catch(e){}}
-          function W(){return window.innerWidth||root.clientWidth}
-          function H(){return window.innerHeight||root.clientHeight}
+          function log(m){post({type:'log',msg:String(m)})}
+          function W(){return wrap.clientWidth||window.innerWidth}
+          function H(){return wrap.clientHeight||window.innerHeight}
 
           function applyMode(){
-            root.classList.toggle('y-paged',paged);
             root.classList.toggle('y-scroll',!paged);
           }
 
           function measure(){
-            if(paged){
-              total=Math.max(1,Math.ceil((yc.scrollWidth-4)/W()));
-            }else{
-              total=1;
-            }
-            if(page>total-1){page=total-1}
-            if(page<0){page=0}
+            if(!paged){ total=1; return }
+            var sw=Math.max(yc.scrollWidth,wrap.scrollWidth);
+            total=Math.max(1,Math.ceil((sw-2)/W()));
           }
 
-          function transform(animate){
-            if(!paged){yc.style.transform='none';return}
-            yc.style.transition=animate?'transform .34s cubic-bezier(.22,.61,.36,1)':'none';
-            yc.style.transform='translate3d('+(-page*W())+'px,0,0)';
+          function sanity(){
+            if(!paged) return true;
+            var ps=yc.querySelectorAll('p,h1,h2,h3,li,div');
+            if(!ps.length) return true;
+            for(var i=0;i<Math.min(ps.length,10);i+=1){
+              var r=ps[i].getBoundingClientRect();
+              if(r.width>8&&r.height>4&&r.right>8&&r.left<W()-8&&r.bottom>8&&r.top<H()-8) return true;
+            }
+            return false;
+          }
+
+          function ensure(){
+            if(paged&&!sanity()){
+              log('layout-fallback: no block inside viewport');
+              paged=false; applyMode(); total=1; tell();
+            }
           }
 
           function tell(){
-            if(paged){
-              post({type:'page',page:page,total:total});
-            }else{
-              var el=wrap;
-              var max=el.scrollHeight-el.clientHeight;
-              var f=max<=0?0:el.scrollTop/max;
-              post({type:'progress',fraction:f});
+            if(paged){ post({type:'page',page:page,total:total}) }
+            else{
+              var max=wrap.scrollHeight-wrap.clientHeight;
+              post({type:'progress',fraction:max<=0?0:wrap.scrollTop/max});
             }
           }
 
           function go(n,animate){
             measure();
             page=Math.max(0,Math.min(total-1,Math.round(n)));
-            transform(animate!==false);
+            busy=true;
+            try{
+              wrap.scrollTo({left:page*W(),top:0,behavior:animate===false?'auto':'smooth'});
+            }catch(e){ wrap.scrollLeft=page*W() }
+            setTimeout(function(){ busy=false; ensure(); tell() },animate===false?30:340);
             tell();
           }
 
-          window.__pageBy=function(d){ go(page+d); };
-          window.__goPage=function(n){ go(n); };
-          window.__pageInfo=function(){ measure(); return {page:page,total:total}; };
+          setTimeout(ensure,340);
+          window.__pageBy=function(d){ go(page+d) };
+          window.__goPage=function(n){ go(n) };
+          window.__pageInfo=function(){ measure(); return {page:page,total:total} };
 
           window.__restore=function(f){
             f=Number(f)||0;
-            if(paged){
-              measure();
-              go(Math.round(f*(total-1)),false);
-            }else{
-              var el=wrap;
-              var max=el.scrollHeight-el.clientHeight;
-              el.scrollTop=max*f;
-              tell();
+            measure();
+            if(paged){ go(Math.round(f*(total-1)),false) }
+            else{
+              var max=wrap.scrollHeight-wrap.clientHeight;
+              wrap.scrollTop=max*f; tell();
             }
           };
 
           window.__scrollBy=function(d){
-            wrap.scrollBy({top:d*(H()*0.86),behavior:'smooth'});
+            if(paged){ go(page+d) }
+            else{ wrap.scrollBy({top:d*H()*0.86,behavior:'smooth'}) }
           };
 
           window.__applyStyle=function(cfg){
             document.body.style.background=cfg.bg;
-            yc.style.background=cfg.bg;
             document.body.style.color=cfg.fg;
-            yc.style.color=cfg.fg;
             yc.style.fontSize=cfg.fontSize+'px';
             yc.style.lineHeight=cfg.lineHeight;
             yc.style.fontFamily='"'+cfg.fontFamily+'",-apple-system,serif';
@@ -483,8 +521,14 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
               ps[i].style.textIndent=cfg.indent+'em';
               ps[i].style.marginBottom=cfg.para+'em';
             }
-            if(!!cfg.paged!==paged){ paged=!!cfg.paged; applyMode(); page=0; }
+            var want=!!cfg.paged;
+            if(want!==paged){ paged=want; applyMode(); page=0; wrap.scrollLeft=0; wrap.scrollTop=0 }
             applyMode();
+            measure();
+            if(paged&&total<=1&&yc.scrollHeight>H()*1.2){
+              log('columns-failed h='+yc.scrollHeight+' w='+W());
+              paged=false; applyMode(); page=0;
+            }
             go(page,false);
           };
 
@@ -517,21 +561,16 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             }
             return null;
           }
-          function pageOfRect(rc){
-            if(!rc){ return 0 }
-            var left=rc.left+page*W();
-            return Math.floor((left+W()*0.02)/W());
-          }
 
           window.__gotoAt=function(off,len){
             var rc=rectOf(off,len||1);
             if(!rc){ return }
             if(paged){
-              var p=pageOfRect(rc);
-              go(p);
+              var left=rc.left+wrap.scrollLeft;
+              go(Math.floor((left+W()*0.03)/W()));
             }else{
-              var delta=rc.top-H()*0.3;
-              wrap.scrollBy({top:delta,behavior:'smooth'});
+              var cur=wrap.getBoundingClientRect().top;
+              wrap.scrollBy({top:(rc.top-cur)-H()*0.3,behavior:'smooth'});
             }
           };
 
@@ -595,7 +634,6 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             post({type:'matches',q:q,list:list});
           };
 
-          // 点击：中间调面板，两侧翻页
           document.addEventListener('click',function(e){
             var t=e.target;
             var a=t&&t.closest?t.closest('a'):null;
@@ -612,7 +650,6 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             post({type:'tap',x:e.clientX/W(),y:e.clientY/H()});
           },true);
 
-          // 左右滑动翻页（不打断选词）
           var sx=0,sy=0,st=0,armed=false;
           wrap.addEventListener('touchstart',function(e){
             if(e.touches.length!==1){ armed=false; return }
@@ -626,16 +663,18 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             var t=e.changedTouches[0];
             var dx=t.clientX-sx, dy=t.clientY-sy, dt=Date.now()-st;
             if(Math.abs(dx)>44&&Math.abs(dx)>Math.abs(dy)*1.3&&dt<900){
-              if(dx<0){ go(page+1) } else { go(page-1) }
+              go(page+(dx<0?1:-1));
             }
           },{passive:true});
 
-          // 滚动模式下持续回报进度（分页模式下 wrap 不滚动，挂着也无害）
-          var tt=null;
           wrap.addEventListener('scroll',function(){
-            if(paged){ return }
-            if(tt){ clearTimeout(tt) }
-            tt=setTimeout(tell,160);
+            if(busy){ return }
+            if(paged){
+              var p=Math.round(wrap.scrollLeft/W());
+              if(p!==page){ page=p; tell() }
+            }else{
+              if(!window.__t){ window.__t=setTimeout(function(){ window.__t=null; tell() },160) }
+            }
           },{passive:true});
 
           if(__AUTOSPACE__){
@@ -651,9 +690,11 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
           applyMode();
           measure();
-          transform(false);
+          go(0,false);
+          var chars=(yc.textContent||'').length;
+          log('ready chars='+chars+' total='+total+' paged='+paged+' sw='+yc.scrollWidth+' w='+W());
           post({type:'ready'});
-          setTimeout(tell,60);
+          setTimeout(tell,80);
         })();
         """#
         .replacingOccurrences(of: "__PAGED__", with: paged)

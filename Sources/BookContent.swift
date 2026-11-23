@@ -50,11 +50,11 @@ final class EPUBContent: BookContent {
 
     private func parse(containerDir dir: URL) {
         let container = dir.appendingPathComponent("META-INF/container.xml")
-        guard let xml = try? String(contentsOf: container, encoding: .utf8),
+        guard let xml = BookText.read(container),
               let opfRel = Self.firstMatch(in: xml, #"full-path\s*=\s*"([^"]+)""#) else { return }
 
         let opfURL = dir.appendingPathComponent(opfRel)
-        guard let opf = try? String(contentsOf: opfURL, encoding: .utf8) else { return }
+        guard let opf = BookText.read(opfURL) else { return }
         let opfDir = opfURL.deletingLastPathComponent()
 
         // manifest: id -> (href, mediaType, properties)
@@ -81,8 +81,7 @@ final class EPUBContent: BookContent {
         // 目录标题：EPUB3 nav 或 EPUB2 ncx
         var titles: [String: String] = [:]
         if let navItem = manifest.values.first(where: { $0.props.contains("nav") }),
-           let navText = try? String(contentsOf: opfDir.appendingPathComponent(navItem.href),
-                                     encoding: .utf8) {
+           let navText = BookText.read(opfDir.appendingPathComponent(navItem.href)) {
             let anchors = Self.matches(in: navText, ##"(?s)<a[^>]*href\s*=\s*"([^"#]*)(?:#[^"]*)?"[^>]*>(.*?)</a>"##)
             for a in anchors {
                 guard let file = Self.firstMatch(in: a, ##"href\s*=\s*"([^"#]*)"##),
@@ -91,8 +90,7 @@ final class EPUBContent: BookContent {
                 if titles[key] == nil { titles[key] = Self.clean(text) }
             }
         } else if let ncxItem = manifest.values.first(where: { $0.type.contains("ncx") }),
-                  let ncx = try? String(contentsOf: opfDir.appendingPathComponent(ncxItem.href),
-                                        encoding: .utf8) {
+                  let ncx = BookText.read(opfDir.appendingPathComponent(ncxItem.href)) {
             let points = Self.matches(in: ncx, #"(?s)<navPoint[^>]*>(.*?)</navPoint>"#)
             for p in points {
                 guard let src = Self.firstMatch(in: p, ##"src\s*=\s*"([^"#]*)"##),
@@ -110,7 +108,8 @@ final class EPUBContent: BookContent {
             guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
             let name = (rel as NSString).lastPathComponent
             let title = titles[name] ?? ""
-            return Chapter(title: title, fileURL: fileURL, html: "", charOffset: 0)
+            return Chapter(title: title, fileURL: fileURL,
+                           html: BookText.read(fileURL) ?? "", charOffset: 0)
         }
     }
 
