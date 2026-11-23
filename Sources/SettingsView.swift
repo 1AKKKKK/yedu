@@ -38,6 +38,7 @@ struct SettingsView: View {
                     Toggle("翻页模式（关闭为滚动）", isOn: $settings.paged)
                     Toggle("中西文自动间距", isOn: $settings.autospace)
                     Toggle("避头尾", isOn: $settings.kinsoku)
+                    Toggle("音量键翻页（实验）", isOn: $settings.volumeKeys)
                 }
 
                 Section("备份") {
@@ -72,6 +73,14 @@ struct SettingsView: View {
                     }
 
                     Button("从文件恢复…") { showRestorePicker = true }
+                }
+
+                Section("诊断") {
+                    Button("重建缺失的封面") {
+                        store.refreshMissingCovers()
+                        message = "已重新抽取封面，回书架即可看到"
+                    }
+                    NavigationLink("崩溃日志") { CrashLogView() }
                 }
 
                 Section("说明") {

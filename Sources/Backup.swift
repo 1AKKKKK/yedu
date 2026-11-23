@@ -72,8 +72,13 @@ struct BackupManager {
             throw NSError(domain: "yedu.backup", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "备份文件打不开"])
         }
-        for entry in archive {
-            _ = try archive.extract(entry, to: staging.appendingPathComponent(entry.path))
+        // 同 BookContent：先快照条目再 extract，边迭代边解压会移动读取游标
+        var entries: [Entry] = []
+        for entry in archive { entries.append(entry) }
+        for entry in entries where entry.type == .file {
+            let path = entry.path
+            if path.contains("..") || path.hasPrefix("/") { continue }
+            _ = try? archive.extract(entry, to: staging.appendingPathComponent(path))
         }
 
         for name in ["library.json", "notes.json"] {

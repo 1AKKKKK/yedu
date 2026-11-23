@@ -57,6 +57,7 @@ final class LibraryStore: ObservableObject {
         try? fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
         load()
         seedFromInboxIfNeeded()
+        refreshMissingCovers()
     }
 
     // MARK: 持久化
@@ -129,13 +130,12 @@ final class LibraryStore: ObservableObject {
             let meta = EPUBMetadata.read(at: dest)
             if let t = meta.title, !t.isEmpty { book.title = t }
             if let a = meta.author, !a.isEmpty { book.author = a }
-            if let coverURL = meta.coverURL {
-                let coverName = "\(id.uuidString).jpg"
+            if let data = meta.coverData {
+                let coverName = "\(id.uuidString).\(meta.coverExt)"
                 let target = coversDir.appendingPathComponent(coverName)
-                if (try? fm.copyItem(at: coverURL, to: target)) != nil {
+                if (try? data.write(to: target)) != nil {
                     book.coverName = coverName
                 }
-                try? fm.removeItem(at: coverURL.deletingLastPathComponent())
             }
         case .txt:
             book.charCount = (try? TextFile.text(at: dest).count) ?? 0
@@ -155,6 +155,23 @@ final class LibraryStore: ObservableObject {
 
     func fileURL(for book: Book) -> URL {
         booksDir.appendingPathComponent(book.fileName)
+    }
+
+    /// 旧书没有封面时重新抽一次（导入逻辑修好后，历史书也能补上）
+    func refreshMissingCovers() {
+        var changed = false
+        for i in books.indices where books[i].format == .epub {
+            guard books[i].coverName == nil else { continue }
+            let meta = EPUBMetadata.read(at: fileURL(for: books[i]))
+            guard let data = meta.coverData else { continue }
+            let name = "\(books[i].id.uuidString).\(meta.coverExt)"
+            let target = coversDir.appendingPathComponent(name)
+            if (try? data.write(to: target)) != nil {
+                books[i].coverName = name
+                changed = true
+            }
+        }
+        if changed { save() }
     }
 
     func delete(_ book: Book) {
@@ -200,7 +217,8 @@ enum EPUBMetadata {
     struct Result {
         var title: String?
         var author: String?
-        var coverURL: URL?
+        var coverData: Data?
+        var coverExt: String = "jpg"
     }
 
     static func read(at url: URL) -> Result {
@@ -222,27 +240,87 @@ enum EPUBMetadata {
         result.title = firstMatch(in: opf, pattern: #"<dc:title[^>]*>([^<]+)</dc:title>"#)
         result.author = firstMatch(in: opf, pattern: #"<dc:creator[^>]*>([^<]+)</dc:creator>"#)
 
-        // 3. 封面：优先 properties="cover-image"，其次 meta name="cover"
-        var coverHref = firstMatch(in: opf,
-                                   pattern: #"<item[^>]*properties\s*=\s*"[^"]*cover-image[^"]*"[^>]*href\s*=\s*"([^"]+)""#)
-        if coverHref == nil,
-           let coverID = firstMatch(in: opf, pattern: #"<meta[^>]*name\s*=\s*"cover"[^>]*content\s*=\s*"([^"]+)""#) {
-            coverHref = firstMatch(in: opf,
-                                   pattern: #"<item[^>]*id\s*=\s*"\#(coverID)"[^>]*href\s*=\s*"([^"]+)""#)
+        // 3. 封面：把 manifest 里每条 <item> 的属性都解析出来再判定，
+        //    不再依赖 properties/id/href 的书写顺序（各家用不同顺序，写死顺序会全部漏判）
+        var items: [(attrs: [String: String], href: String)] = []
+        for tag in matches(in: opf, pattern: #"<item\s+[^>]*?/?>"#) {
+            let attrs = attributes(in: tag)
+            if let href = attrs["href"], !href.isEmpty {
+                items.append((attrs, href))
+            }
         }
+
+        var coverHref: String?
+
+        // 3.1 EPUB3：properties="cover-image"
+        if let hit = items.first(where: { ($0.attrs["properties"] ?? "").contains("cover-image") }) {
+            coverHref = hit.href
+        }
+
+        // 3.2 EPUB2：<meta name="cover" content="封面 item 的 id"/>
+        if coverHref == nil,
+           let coverID = firstMatch(in: opf, pattern: #"<meta[^>]*name\s*=\s*"cover"[^>]*>([^>]*)"#),
+           let id = firstMatch(in: coverID, pattern: #"content\s*=\s*"([^"]+)""#) {
+            coverHref = items.first(where: { $0.attrs["id"] == id })?.href
+        }
+
+        // 3.3 兜底：id / href 里带 cover 的图片条目
+        if coverHref == nil {
+            if let hit = items.first(where: { item in
+                let type = item.attrs["media-type"] ?? ""
+                guard type.hasPrefix("image") else { return false }
+                let id = (item.attrs["id"] ?? "").lowercased()
+                let href = item.href.lowercased()
+                return id.contains("cover") || href.contains("cover")
+            }) {
+                coverHref = hit.href
+            }
+        }
+
+        // 3.4 再兜底：manifest 里的第一张图片
+        if coverHref == nil {
+            coverHref = items.first(where: {
+                ($0.attrs["media-type"] ?? "").hasPrefix("image")
+            })?.href
+        }
+
         guard let href = coverHref else { return result }
 
         let opfDir = (opfPath as NSString).deletingLastPathComponent
         let innerPath = opfDir.isEmpty ? href : opfDir + "/" + href
         guard let coverData = extract(innerPath, from: archive) else { return result }
 
-        let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
-        let tmpFile = tmpDir.appendingPathComponent("cover.jpg")
-        try? coverData.write(to: tmpFile)
-        result.coverURL = tmpFile
+        result.coverData = coverData
+        let ext = (href as NSString).pathExtension.lowercased()
+        result.coverExt = ["jpg", "jpeg", "png", "gif", "webp"].contains(ext)
+            ? (ext == "jpeg" ? "jpg" : ext)
+            : "jpg"
         return result
+    }
+
+    /// 把标签里的 k="v" 全部收成字典
+    private static func attributes(in tag: String) -> [String: String] {
+        var out: [String: String] = [:]
+        guard let re = try? NSRegularExpression(pattern: #"([\w:.-]+)\s*=\s*"([^"]*)""#) else { return out }
+        let range = NSRange(tag.startIndex..., in: tag)
+        for m in re.matches(in: tag, range: range) {
+            guard m.numberOfRanges > 2,
+                  let k = Range(m.range(at: 1), in: tag),
+                  let v = Range(m.range(at: 2), in: tag) else { continue }
+            out[String(tag[k])] = String(tag[v])
+        }
+        return out
+    }
+
+    private static func matches(in text: String, pattern: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: pattern,
+                                                options: [.caseInsensitive, .dotMatchesLineSeparators])
+        else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return re.matches(in: text, range: range).compactMap { m in
+            guard let r = Range(m.range, in: text) else { return nil }
+            return String(text[r])
+        }
     }
 
     private static func extract(_ path: String, from archive: Archive) -> Data? {

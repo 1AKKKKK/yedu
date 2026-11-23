@@ -6,6 +6,7 @@ struct ReadApp: App {
     @StateObject private var notes: HighlightStore
 
     init() {
+        CrashLog.install()
         let s = LibraryStore()
         _store = StateObject(wrappedValue: s)
         _notes = StateObject(wrappedValue: HighlightStore(store: s))

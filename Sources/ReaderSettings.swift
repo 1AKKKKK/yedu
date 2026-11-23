@@ -47,8 +47,33 @@ struct ReaderSettings: Codable, Equatable {
     var kinsoku: Bool = true
     /// 中西文自动间距（JS 补）
     var autospace: Bool = true
+    /// 音量键翻页：默认关闭。需要给 AVAudioSession 的 outputVolume 装 KVO，
+    /// 在未激活会话/部分机型上会直接把进程带走，所以做成显式开关
+    var volumeKeys: Bool = false
+
+    init() {}
+
+    /// 手动解码：缺字段就落回默认值，老版本存下来的设置不会因为加字段而整份失效
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fontSize = (try? c.decode(Double.self, forKey: .fontSize)) ?? 19
+        lineHeight = (try? c.decode(Double.self, forKey: .lineHeight)) ?? 1.8
+        fontFamily = (try? c.decode(String.self, forKey: .fontFamily)) ?? "Songti SC"
+        indentEM = (try? c.decode(Double.self, forKey: .indentEM)) ?? 2
+        paragraphSpacingEM = (try? c.decode(Double.self, forKey: .paragraphSpacingEM)) ?? 0.4
+        theme = (try? c.decode(ReaderTheme.self, forKey: .theme)) ?? .paper
+        paged = (try? c.decode(Bool.self, forKey: .paged)) ?? true
+        kinsoku = (try? c.decode(Bool.self, forKey: .kinsoku)) ?? true
+        autospace = (try? c.decode(Bool.self, forKey: .autospace)) ?? true
+        volumeKeys = (try? c.decode(Bool.self, forKey: .volumeKeys)) ?? false
+    }
 
     static let storageKey = "reader.settings.v1"
+
+    enum CodingKeys: String, CodingKey {
+        case fontSize, lineHeight, fontFamily, indentEM, paragraphSpacingEM
+        case theme, paged, kinsoku, autospace, volumeKeys
+    }
 
     static func load() -> ReaderSettings {
         guard let data = UserDefaults.standard.data(forKey: storageKey),

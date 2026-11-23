@@ -24,13 +24,22 @@ final class EPUBContent: BookContent {
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             if let archive = try? Archive(url: url, accessMode: .read) {
-                for entry in archive where entry.type == .file {
-                    _ = try? archive.extract(entry) { data in
-                        let target = dir.appendingPathComponent(entry.path)
-                        try? FileManager.default.createDirectory(
-                            at: target.deletingLastPathComponent(),
-                            withIntermediateDirectories: true)
-                        try? data.write(to: target)
+                // 关键：先把条目全部快照下来。
+                // `for entry in archive` 期间调用 archive.extract(entry) 会移动 ZIP 读取游标，
+                // 在真机上表现为 EXC_BAD_ACCESS —— 也就是「导入正常、一打开书就闪退」。
+                var entries: [Entry] = []
+                for e in archive { entries.append(e) }
+                for entry in entries where entry.type == .file {
+                    let path = entry.path
+                    if path.contains("..") || path.hasPrefix("/") { continue }
+                    autoreleasepool {
+                        _ = try? archive.extract(entry) { data in
+                            let target = dir.appendingPathComponent(path)
+                            try? FileManager.default.createDirectory(
+                                at: target.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+                            try? data.write(to: target)
+                        }
                     }
                 }
             }
@@ -95,12 +104,21 @@ final class EPUBContent: BookContent {
 
         chapters = order.compactMap { idref in
             guard let item = manifest[idref] else { return nil }
-            let fileURL = opfDir.appendingPathComponent(item.href)
+            // OPF 里的 href 常带 %20 之类的百分号编码，落盘路径要解回来
+            let rel = item.href.removingPercentEncoding ?? item.href
+            let fileURL = opfDir.appendingPathComponent(rel)
             guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-            let name = (item.href as NSString).lastPathComponent
+            let name = (rel as NSString).lastPathComponent
             let title = titles[name] ?? ""
             return Chapter(title: title, fileURL: fileURL, html: "", charOffset: 0)
         }
+    }
+
+    /// 章节标题按文件名兜底（nav 里拿不到时不要留空）
+    func fallbackTitle(for chapter: Chapter) -> String {
+        chapter.title.isEmpty
+            ? (chapter.fileURL?.deletingPathExtension().lastPathComponent ?? displayTitle)
+            : chapter.title
     }
 
     func locator(forChapter index: Int, fraction: Double) -> ReadingLocator {

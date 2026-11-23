@@ -24,6 +24,7 @@ struct ReaderContainer: View {
     @State private var matchCursor = 0
     @State private var noteText = ""
     @State private var showNote = false
+    @State private var didLoad = false
 
     private let proxy = ReaderProxy()
     private let volumeWatcher = VolumeKeyWatcher()
@@ -72,10 +73,7 @@ struct ReaderContainer: View {
                     }
                 )
                 .ignoresSafeArea()
-                .background(
-                    VolumeKeyHost(watcher: volumeWatcher)
-                        .frame(width: 0, height: 0)
-                )
+                .background(volumeHost)
             } else if let err = loadError {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
@@ -136,6 +134,18 @@ struct ReaderContainer: View {
     private var selectionBinding: Binding<Bool> {
         Binding(get: { pendingSelection != nil },
                 set: { if !$0 { pendingSelection = nil } })
+    }
+
+    // MARK: 音量键（默认关闭，见 ReaderSettings.volumeKeys）
+
+    @ViewBuilder
+    private var volumeHost: some View {
+        if settings.volumeKeys {
+            VolumeKeyHost(watcher: volumeWatcher)
+                .frame(width: 0, height: 0)
+        } else {
+            Color.clear.frame(width: 0, height: 0)
+        }
     }
 
     // MARK: 顶部面板
@@ -370,21 +380,41 @@ struct ReaderContainer: View {
     // MARK: 加载
 
     private func load() {
+        guard !didLoad else { return }
+        didLoad = true
+
         let url = store.fileURL(for: book)
-        switch book.format {
-        case .epub:
-            content = EPUBContent(url: url, title: book.title, cacheRoot: store.extractDir)
-        case .txt:
-            do {
-                let text = try TextFile.text(at: url)
-                content = TXTContent(text: text, title: book.title)
-            } catch {
-                loadError = "读取失败：\(error.localizedDescription)"
+        let cache = store.extractDir
+        let title = book.title
+        let format = book.format
+
+        // 解包一整本书（EPUB 动辄上百兆条目）必须离开主线程，
+        // 否则 onAppear 里同步解压会被看门狗杀掉 —— 表现就是「点开就闪退」且没有崩溃日志
+        DispatchQueue.global(qos: .userInitiated).async {
+            var built: BookContent?
+            var error: String?
+
+            switch format {
+            case .epub:
+                built = EPUBContent(url: url, title: title, cacheRoot: cache)
+            case .txt:
+                do {
+                    let text = try TextFile.text(at: url)
+                    built = TXTContent(text: text, title: title)
+                } catch {
+                    error = "读取失败：\(error.localizedDescription)"
+                }
             }
-        }
-        if let c = content, c.chapters.isEmpty {
-            loadError = "这本书解析出 0 个章节，可能文件损坏"
-            content = nil
+
+            if let c = built, c.chapters.isEmpty {
+                error = "这本书解析出 0 个章节，可能文件损坏"
+                built = nil
+            }
+
+            DispatchQueue.main.async {
+                content = built
+                loadError = error
+            }
         }
     }
 }
