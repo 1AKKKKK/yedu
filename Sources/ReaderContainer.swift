@@ -25,6 +25,9 @@ struct ReaderContainer: View {
     @State private var noteText = ""
     @State private var showNote = false
     @State private var didLoad = false
+    @State private var currentFraction: Double = 0
+    @State private var pageLabel = ""
+    @State private var toast: String?
 
     private let proxy = ReaderProxy()
     private let volumeWatcher = VolumeKeyWatcher()
@@ -33,6 +36,7 @@ struct ReaderContainer: View {
         var start: Int
         var end: Int
         var text: String
+        var chapter: Int
     }
 
     enum SheetKind: String, Identifiable {
@@ -60,12 +64,16 @@ struct ReaderContainer: View {
                     onTapCenter: { showPanel.toggle() },
                     onSelection: { s, e, t in
                         if s < 0 { searchResult = "没找到"; return }
-                        pendingSelection = Selection(start: s, end: e, text: t)
+                        pendingSelection = Selection(start: s, end: e, text: t, chapter: chapterIndex)
                     },
                     onMatches: { n in
                         matchCount = n
                         matchCursor = n > 0 ? 1 : 0
                         searchResult = n > 0 ? "共 \(n) 条" : "没找到"
+                    },
+                    onPage: { p, t in
+                        pageLabel = "\(p)/\(t)"
+                        currentFraction = t > 1 ? Double(p - 1) / Double(t - 1) : 0
                     },
                     onNoteref: { text in
                         noteText = text
@@ -90,6 +98,20 @@ struct ReaderContainer: View {
                 Spacer()
             }
             .animation(.easeInOut(duration: 0.18), value: showPanel)
+
+            if let t = toast {
+                VStack {
+                    Spacer()
+                    Text(t)
+                        .font(.footnote)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(Capsule().fill(Color.black.opacity(0.72)))
+                        .padding(.bottom, 74)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
         }
         .statusBarHidden(true)
         .preferredColorScheme(settings.theme.isDark ? .dark : .light)
@@ -102,7 +124,7 @@ struct ReaderContainer: View {
             settings.save()
             if let c = content {
                 store.updateLocator(ReadingLocator(chapterIndex: chapterIndex,
-                                                   fraction: book.locatorFraction),
+                                                   fraction: currentFraction),
                                     for: book, chapterCount: c.chapters.count)
             }
         }
@@ -170,7 +192,7 @@ struct ReaderContainer: View {
                 Button { sheet = .search } label: { Image(systemName: "magnifyingglass") }
                 Button { sheet = .notes } label: { Image(systemName: "highlighter") }
                 Button { toggleBookmark() } label: {
-                    Image(systemName: "bookmark")
+                    Image(systemName: hasBookmark ? "bookmark.fill" : "bookmark")
                 }
                 Spacer()
                 Button {
@@ -203,7 +225,8 @@ struct ReaderContainer: View {
                     }
                 }
                 Spacer()
-                Text("\(chapterIndex + 1)/\(content?.chapters.count ?? 0)")
+                Text(pageLabel.isEmpty ? "第 \(chapterIndex + 1) 章"
+                                       : "第 \(chapterIndex + 1) 章 · \(pageLabel)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -293,15 +316,42 @@ struct ReaderContainer: View {
     private var notesSheet: some View {
         NavigationView {
             List {
+                let bms = notes.bookmarks(for: book.id)
+                if !bms.isEmpty {
+                    Section(header: Text("书签")) {
+                        ForEach(bms) { b in
+                            Button {
+                                chapterIndex = b.chapterIndex
+                                proxy.jump(to: b.chapterIndex, fraction: b.fraction)
+                                sheet = nil
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "bookmark.fill").font(.caption)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(b.preview.isEmpty ? "第 \(b.chapterIndex + 1) 章" : b.preview)
+                                            .lineLimit(1)
+                                        Text("第 \(b.chapterIndex + 1) 章")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .onDelete { idx in
+                            for i in idx where bms.indices.contains(i) {
+                                notes.deleteBookmark(bms[i])
+                            }
+                        }
+                    }
+                }
                 let hs = notes.highlights(for: book.id)
-                if hs.isEmpty {
-                    Text("还没有笔记。在正文里长按选中文字即可高亮。")
+                if hs.isEmpty && bms.isEmpty {
+                    Text("还没有笔记。长按选中正文即可高亮，工具栏书签按钮可加书签。")
                         .font(.footnote).foregroundColor(.secondary)
                 }
                 ForEach(hs) { h in
                     Button {
                         chapterIndex = h.chapterIndex
-                        proxy.jump(to: h.chapterIndex)
+                        proxy.jumpChar(h.chapterIndex, offset: h.start)
                         sheet = nil
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -350,25 +400,43 @@ struct ReaderContainer: View {
 
     private func addHighlight(_ color: HighlightColor) {
         guard let sel = pendingSelection else { return }
-        let chapter = content?.chapters.indices.contains(chapterIndex) == true
-            ? content!.chapters[chapterIndex].title : ""
         notes.add(Highlight(bookID: book.id,
-                            chapterIndex: chapterIndex,
+                            chapterIndex: sel.chapter,
                             start: sel.start,
                             end: sel.end,
                             text: sel.text,
-                            color: color,
-                            note: chapter.isEmpty ? "" : ""))
+                            color: color))
         pendingSelection = nil
+        flash("已标注 \(sel.text.prefix(10))…")
+        proxy.repaint(notes.highlights(bookID: book.id, chapter: sel.chapter))
+    }
+
+    private var hasBookmark: Bool {
+        let info = proxy.pageInfo
+        let f = info.1 > 1 ? Double(info.0) / Double(info.1 - 1) : 0
+        return notes.bookmarks(for: book.id).contains {
+            $0.chapterIndex == chapterIndex && abs($0.fraction - f) < 0.03
+        }
     }
 
     private func toggleBookmark() {
+        let info = proxy.pageInfo
+        let fraction = info.1 > 1 ? Double(info.0) / Double(info.1 - 1) : 0
         let preview = content?.chapters.indices.contains(chapterIndex) == true
             ? content!.chapters[chapterIndex].title : ""
+        let existed = hasBookmark
         notes.toggleBookmark(bookID: book.id,
                              chapter: chapterIndex,
-                             fraction: book.locatorFraction,
+                             fraction: fraction,
                              preview: preview)
+        flash(existed ? "已去掉书签" : "已加书签")
+    }
+
+    private func flash(_ text: String) {
+        toast = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            if toast == text { toast = nil }
+        }
     }
 
     private func export(_ markdown: Bool) {
