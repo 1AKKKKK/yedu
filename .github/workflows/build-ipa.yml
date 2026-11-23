@@ -8,26 +8,27 @@ on:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
+      - name: 选择 Xcode
         run: |
           ls /Applications | grep -i xcode || true
-          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+          sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install XcodeGen
+      - name: 安装 XcodeGen
         run: |
           brew install xcodegen || brew upgrade xcodegen
           xcodegen --version
 
-      - name: Generate project
+      - name: 生成项目
         run: xcodegen generate
 
-      - name: Build (unsigned)
+      - name: 构建（未签名）
         run: |
           set -o pipefail
           xcodebuild \
@@ -41,9 +42,14 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=NO \
-            build 2>&1 | tail -40
+            build > build.log 2>&1 || true
+          echo "=== ERRORS START ==="
+          grep -n -E "error:|cannot find|does not conform|extra argument|missing argument|no exact matches" build.log | head -80 || true
+          echo "=== ERRORS END ==="
+          tail -25 build.log
+          grep -q "BUILD SUCCEEDED" build.log
 
-      - name: Package IPA
+      - name: 打包 IPA
         run: |
           APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           echo "app: $APP_PATH"
@@ -60,3 +66,10 @@ jobs:
           name: Yedu-unsigned-ipa
           path: Yedu.ipa
           if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
