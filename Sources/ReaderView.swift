@@ -24,6 +24,8 @@ struct ReaderView: UIViewControllerRepresentable {
     var onLocatorChange: (ReadingLocator) -> Void
     var onTapCenter: () -> Void
     var onSelection: ((Int, Int, String) -> Void)?
+    var onMatches: ((Int) -> Void)?
+    var onNoteref: ((String) -> Void)?
 
     func makeUIViewController(context: Context) -> ReaderController {
         let c = ReaderController(content: content,
@@ -32,6 +34,8 @@ struct ReaderView: UIViewControllerRepresentable {
         c.onLocatorChange = onLocatorChange
         c.onTapCenter = onTapCenter
         c.onSelection = onSelection
+        c.onMatches = onMatches
+        c.onNoteref = onNoteref
         c.applyHighlights(highlights)
         proxy?.controller = c
         return c
