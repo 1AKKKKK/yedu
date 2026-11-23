@@ -74,9 +74,9 @@ final class EPUBContent: BookContent {
         if let navItem = manifest.values.first(where: { $0.props.contains("nav") }),
            let navText = try? String(contentsOf: opfDir.appendingPathComponent(navItem.href),
                                      encoding: .utf8) {
-            let anchors = Self.matches(in: navText, #"(?s)<a[^>]*href\s*=\s*"([^"#]*)(?:#[^"]*)?"[^>]*>(.*?)</a>"#)
+            let anchors = Self.matches(in: navText, ##"(?s)<a[^>]*href\s*=\s*"([^"#]*)(?:#[^"]*)?"[^>]*>(.*?)</a>"##)
             for a in anchors {
-                guard let file = Self.firstMatch(in: a, #"href\s*=\s*"([^"#]*)"#),
+                guard let file = Self.firstMatch(in: a, ##"href\s*=\s*"([^"#]*)"##),
                       let text = Self.firstMatch(in: a, #">([^<]*)</a>"#) else { continue }
                 let key = (file as NSString).lastPathComponent
                 if titles[key] == nil { titles[key] = Self.clean(text) }
@@ -86,7 +86,7 @@ final class EPUBContent: BookContent {
                                         encoding: .utf8) {
             let points = Self.matches(in: ncx, #"(?s)<navPoint[^>]*>(.*?)</navPoint>"#)
             for p in points {
-                guard let src = Self.firstMatch(in: p, #"src\s*=\s*"([^"#]*)"#),
+                guard let src = Self.firstMatch(in: p, ##"src\s*=\s*"([^"#]*)"##),
                       let text = Self.firstMatch(in: p, #"<text[^>]*>([^<]*)</text>"#) else { continue }
                 let key = (src as NSString).lastPathComponent
                 if titles[key] == nil { titles[key] = Self.clean(text) }
