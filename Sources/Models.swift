@@ -33,7 +33,6 @@ struct Book: Identifiable, Codable, Equatable {
 
 // MARK: - 存储
 
-@MainActor
 final class LibraryStore: ObservableObject {
     @Published private(set) var books: [Book] = []
     @Published var importing = false
