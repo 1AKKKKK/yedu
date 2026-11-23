@@ -31,6 +31,7 @@ struct ReaderView: UIViewControllerRepresentable {
         let c = ReaderController(content: content,
                                  settings: settings,
                                  locator: locator)
+        _ = c.view            // 先把 view 装起来，webView 才会在 viewDidLoad 里创建
         c.onLocatorChange = onLocatorChange
         c.onTapCenter = onTapCenter
         c.onSelection = onSelection
@@ -122,12 +123,13 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
     private func loadChapter(_ index: Int, restoreFraction: Double) {
         guard content.chapters.indices.contains(index) else { return }
+        guard isViewLoaded, let web = webView else { return }
         let chapter = content.chapters[index]
         let html = Self.page(body: bodyHTML(for: chapter),
                              title: chapter.title,
                              settings: settings)
         pendingRestore = restoreFraction
-        webView.loadHTMLString(html, baseURL: content.baseDirectory)
+        web.loadHTMLString(html, baseURL: content.baseDirectory)
     }
 
     func apply(settings new: ReaderSettings) {
@@ -136,7 +138,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
         view.backgroundColor = UIColor(hex: settings.theme.background)
         guard changed else { return }
         let js = "window.__applyStyle(\(Self.styleJSON(settings)));"
-        webView.evaluateJavaScript(js, completionHandler: nil)
+        eval(js)
     }
 
     // MARK: 对外 API（目录跳转 / 搜索 / 高亮）
@@ -153,8 +155,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
         guard !query.isEmpty else { return }
         matchQuery = query
         matchIndex = 0
-        webView.evaluateJavaScript("window.__findAll(\(Self.jsString(query)));",
-                                   completionHandler: nil)
+        eval("window.__findAll(\(Self.jsString(query)));")
     }
 
     func stepMatch(_ delta: Int) {
@@ -166,9 +167,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
     private func gotoMatch(_ i: Int) {
         guard matches.indices.contains(i) else { return }
         let off = matches[i]
-        webView.evaluateJavaScript(
-            "window.__gotoAt(\(off), \(max(1, matchQuery.count)));",
-            completionHandler: nil)
+        eval("window.__gotoAt(\(off), \(max(1, matchQuery.count)));")
     }
 
     func applyHighlights(_ list: [Highlight]) {
@@ -176,12 +175,19 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
         pushHighlights()
     }
 
+    /// 所有 JS 注入都走这里：view 还没装好或 webView 还没建出来时直接跳过，
+    /// 不要用 `webView!` —— 那会在 makeUIViewController 阶段 SIGTRAP
+    private func eval(_ js: String) {
+        guard isViewLoaded, let web = webView else { return }
+        web.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     private func pushHighlights() {
+        guard isViewLoaded, webView != nil else { return }
         let arr = pendingHighlights.map { h in
             "{\"start\":\(h.start),\"end\":\(h.end),\"c\":\"\(h.color.css)\",\"id\":\"\(h.id.uuidString)\"}"
         }.joined(separator: ",")
-        webView.evaluateJavaScript("window.__paint && window.__paint([\(arr)]);",
-                                   completionHandler: nil)
+        eval("window.__paint && window.__paint([\(arr)]);")
     }
 
     private static func jsString(_ s: String) -> String {
@@ -222,7 +228,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
             if let f = pendingRestore {
                 pendingRestore = nil
                 let js = "window.__restore(\(f));"
-                webView.evaluateJavaScript(js, completionHandler: nil)
+                eval(js)
             }
         case "tap":
             let x = body["x"] as? Double ?? 0.5
@@ -256,7 +262,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
     }
 
     private func turnPage(_ dir: Int) {
-        webView.evaluateJavaScript("window.__turn(\(dir));", completionHandler: nil)
+        eval("window.__turn(\(dir));")
     }
 
     func turn(_ dir: Int) { turnPage(dir) }
@@ -265,7 +271,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // ready 消息会带回恢复请求；这里只兜底一次进度上报
-        webView.evaluateJavaScript("window.__report && window.__report();", completionHandler: nil)
+        eval("window.__report && window.__report();")
         pushHighlights()
     }
 
