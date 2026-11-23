@@ -112,7 +112,7 @@ final class ReaderController: UIViewController, WKScriptMessageHandler, WKNaviga
         web.scrollView.contentInsetAdjustmentBehavior = .never
         self.webView = web
         self.view = web
-        isIdleTimerDisabled = true
+        UIApplication.shared.isIdleTimerDisabled = true
     }
 
     override func viewDidLoad() {
